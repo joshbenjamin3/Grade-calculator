@@ -73,10 +73,13 @@ with col1:
 with col2:
     st.subheader("Grade Prediction")
     target_grade = st.number_input("Target Overall Grade (%)", min_value=0.0, max_value=100.0, value=80.0)
+    drop_lowest = st.checkbox("Drop Midterm 1 (if M1 < M2 and all three entered)?", value=False)
+    potential_curve = st.number_input("Potential Curve Adjustment (Points)", min_value=0.0, step=0.5, value=0.0, help="Enter potential points added by a curve to see how it affects requirements.")
     
     # Calculate current grade based on entered components
     current_grade = 0
     total_weight = 0
+    midterm_scores = {}
     
     # Define weights
     weights = {
@@ -88,94 +91,104 @@ with col2:
         'final': 0.25
     }
     
-    # Calculate current grade and total weight
-    if has_homework:
-        current_grade += homework * weights['homework']
-        total_weight += weights['homework']
-    if has_discussion:
-        current_grade += discussion * weights['discussion']
-        total_weight += weights['discussion']
-    if has_mid1:
-        current_grade += mid1 * weights['mid1']
-        total_weight += weights['mid1']
-    if has_mid2:
-        current_grade += mid2 * weights['mid2']
-        total_weight += weights['mid2']
-    if has_mid3:
-        current_grade += mid3 * weights['mid3']
-        total_weight += weights['mid3']
-    if has_final:
-        current_grade += final * weights['final']
-        total_weight += weights['final']
+    # --- Calculate provisional grade and weight ---
+    component_inputs = {
+        'homework': (homework, has_homework),
+        'discussion': (discussion, has_discussion),
+        'mid1': (mid1, has_mid1),
+        'mid2': (mid2, has_mid2),
+        'mid3': (mid3, has_mid3),
+        'final': (final, has_final)
+    }
     
-    # Calculate current percentage of completed work
+    all_midterms_entered = has_mid1 and has_mid2 and has_mid3
+    
+    for name, (score, has_grade) in component_inputs.items():
+        if has_grade:
+            current_grade += score * weights[name]
+            total_weight += weights[name]
+            if name in ['mid1', 'mid2', 'mid3']:
+                midterm_scores[name] = score
+
+    # --- Apply drop logic for Midterm 1 if applicable ---
+    dropped_midterm_info = ""
+    midterm_to_drop = None 
+    if drop_lowest and all_midterms_entered: 
+        if midterm_scores['mid1'] < midterm_scores['mid2']:
+            midterm1_score = midterm_scores['mid1']
+            current_grade -= midterm1_score * weights['mid1']
+            total_weight -= weights['mid1']
+            midterm_to_drop = 'mid1'
+            dropped_midterm_info = f"*Midterm 1 ({midterm1_score:.2f}%) dropped (was lower than Midterm 2: {midterm_scores['mid2']:.2f}%).*"
+        else:
+             dropped_midterm_info = f"*Midterm 1 ({midterm_scores['mid1']:.2f}%) not dropped (not lower than Midterm 2: {midterm_scores['mid2']:.2f}%).*"
+
+    # --- Display Current Progress ---
     if total_weight > 0:
-        # Split calculation for debugging
-        ratio = current_grade / total_weight
-        current_percentage = ratio
-        
-        # --- DEBUGGING START ---
-        # st.write(f"(Debug: current_grade = {current_grade})") 
-        # st.write(f"(Debug: total_weight = {total_weight})")
-        # st.write(f"(Debug: calculated ratio [grade/weight] = {ratio})") # Added ratio debug
-        # st.write(f"(Debug: final percentage [=ratio] = {current_percentage})") # Updated debug label
-        # --- DEBUGGING END ---
-        
-        st.subheader("Current Progress") # Moved subheader down
-        st.write(f"Points Earned: {current_grade:.2f}%")
+        st.subheader("Current Progress")
+        st.write(f"Points Earned: {current_grade:.2f}% (out of {total_weight*100:.0f}% possible)") 
         st.write(f"Completed: {total_weight*100:.0f}% of total grade")
-        st.write(f"Current Average: {current_percentage:.2f}%") # Display the correct percentage
+        if dropped_midterm_info:
+            st.info(dropped_midterm_info) 
+        st.write(f"Current Average Score on Included Work: {current_grade / total_weight:.2f}%")
     else:
         st.info("Please enter at least one grade to see your progress.")
     
-    # Calculate what's needed on remaining components
-    if st.checkbox("Show what's needed to reach target grade", value=True): # Default checkbox to True
-        if total_weight < 1.0:  # Only show if there are remaining grades
-            remaining_weight = 1.0 - total_weight
-            points_needed = target_grade - current_grade
+    # --- Calculate and Display Predictions ---
+    if st.checkbox("Show what's needed to reach target grade", value=True):
+        max_possible_weight = 1.0 - (weights['mid1'] if midterm_to_drop else 0.0)
+        
+        if total_weight < max_possible_weight: 
+            remaining_weight = max_possible_weight - total_weight
             
-            if remaining_weight > 0: # Avoid division by zero if total_weight is exactly 1.0
-                required_average_on_remaining = points_needed / remaining_weight
+            # Adjust points needed by the potential curve adjustment
+            points_needed = target_grade - current_grade
+            adjusted_points_needed = points_needed - potential_curve # Apply curve adjustment here
+            
+            if remaining_weight > 0: 
+                # Calculate required average based on adjusted points needed
+                required_average_on_remaining = adjusted_points_needed / remaining_weight
                 
-                st.subheader("Prediction Results") # Renamed subheader
-                st.write(f"To reach your target grade of **{target_grade:.2f}%**, you need an average score of:")
-                st.metric(label="Average on Remaining Assignments", value=f"{required_average_on_remaining:.2f}%") # Use metric for better display
+                st.subheader("Prediction Results") 
+                # Modify text to mention the curve adjustment if it's non-zero
+                curve_text = f" (considering a {potential_curve:.2f} point potential curve adjustment)" if potential_curve > 0 else ""
+                st.write(f"To reach your target grade of **{target_grade:.2f}%**{curve_text}, you need an average score of:")
+                st.metric(label="Average on Remaining Assignments", value=f"{required_average_on_remaining:.2f}%")
 
-                # Determine which assignments are remaining
                 remaining_assignments = []
-                if not has_mid3: remaining_assignments.append(f"Midterm 3 ({weights['mid3']*100:.0f}%)")
-                if not has_final: remaining_assignments.append(f"Final Exam ({weights['final']*100:.0f}%)")
-                # Add checks for other components if they could be unchecked
-                if not has_homework: remaining_assignments.append(f"Homework ({weights['homework']*100:.0f}%)")
-                if not has_discussion: remaining_assignments.append(f"Discussion ({weights['discussion']*100:.0f}%)")
-                if not has_mid1: remaining_assignments.append(f"Midterm 1 ({weights['mid1']*100:.0f}%)")
-                if not has_mid2: remaining_assignments.append(f"Midterm 2 ({weights['mid2']*100:.0f}%)")
+                for name, (score, has_grade) in component_inputs.items():
+                     if not has_grade and name != midterm_to_drop:
+                         remaining_assignments.append(f"{name.replace('mid','Midterm ').capitalize()} ({weights[name]*100:.0f}%)")
                 
                 if remaining_assignments:
                     st.write(f"*Remaining assignments contributing {remaining_weight*100:.0f}% to the total grade:*")
                     st.write(f"  - {', '.join(remaining_assignments)}")
 
-                # Update warning logic based on the average needed
+                # Update warning/success logic based on the adjusted required average
                 if required_average_on_remaining > 100:
-                    st.warning(f"⚠️ Achieving an average of {required_average_on_remaining:.2f}% on the remaining assignments is impossible (max is 100%). You may need to adjust your target grade.")
+                    st.warning(f"⚠️ Even with the potential curve adjustment, achieving an average of {required_average_on_remaining:.2f}% on the remaining assignments is impossible (max is 100%). You may need to adjust your target or curve assumption.")
                 elif required_average_on_remaining < 0:
-                     # If points_needed is negative, the target is already met or exceeded.
-                     st.success(f"🎉 You've already met or exceeded your target grade of {target_grade:.2f}% based on current entries!")
+                     st.success(f"🎉 With the potential curve adjustment considered, you've already met or exceeded your target grade of {target_grade:.2f}%!")
                 else:
-                     # Provide context if the score is achievable
-                     st.info(f"This average score of {required_average_on_remaining:.2f}% across the remaining assignments is needed to reach your goal.")
+                     st.info(f"This adjusted average score of {required_average_on_remaining:.2f}% across the remaining assignments is needed to reach your goal{curve_text}.")
 
-            else: # points_needed <= 0 but remaining_weight > 0
-                 st.success(f"🎉 You've already met or exceeded your target grade of {target_grade:.2f}% based on current entries!")
+            else: # points_needed <= 0 
+                 # Check if target met even *without* curve adjustment for a clearer message
+                 if (target_grade - current_grade) <= 0:
+                    st.success(f"🎉 You've already met or exceeded your target grade of {target_grade:.2f}% based on current entries (before any potential curve)! ")
+                 else: # Target met only *because* of the curve adjustment
+                    st.success(f"🎉 With the potential curve adjustment of {potential_curve:.2f} points, you meet or exceed your target grade of {target_grade:.2f}%!")
         
-        elif total_weight >= 1.0 : # total_weight is 1.0 or more (all grades entered)
-            st.info("You have entered all grades. Your final grade is calculated.")
-            # Optionally show comparison to target grade
-            if current_grade >= target_grade:
-                 st.success(f"Your final grade of {current_grade:.2f}% meets or exceeds your target of {target_grade:.2f}%!")
+        elif total_weight >= max_possible_weight : # All relevant grades entered
+            st.info("You have entered all grades required for the final calculation (considering dropped midterm if applicable).")
+            # Calculate final grade considering potential curve
+            final_grade_with_curve = current_grade + potential_curve
+            final_grade_percentage = (final_grade_with_curve / total_weight) if total_weight > 0 else 0 
+            st.metric(label="Final Calculated Grade (with potential curve)", value=f"{final_grade_percentage:.2f}%")
+            if final_grade_percentage >= target_grade:
+                 st.success(f"Your final grade (with potential curve) meets or exceeds your target of {target_grade:.2f}%!")
             else:
-                 st.warning(f"Your final grade of {current_grade:.2f}% is below your target of {target_grade:.2f}%.")
-        # Removed the outer else for points_needed <= 0 as it's handled within the required_average_on_remaining logic now.
+                 st.warning(f"Your final grade (with potential curve) is below your target of {target_grade:.2f}%.")
 
 # Grade cutoff information
 st.subheader("Approximate Grade Cutoffs")
